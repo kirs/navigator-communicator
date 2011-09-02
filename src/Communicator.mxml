@@ -1,0 +1,421 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Application xmlns:fx="http://ns.adobe.com/mxml/2009" 
+			   xmlns:s="library://ns.adobe.com/flex/spark" 
+			   xmlns:mx="library://ns.adobe.com/flex/mx" minWidth="955" minHeight="600"
+			   creationComplete="initAll()" xmlns:local="*" currentState="main">
+	
+	<fx:Script>
+		<![CDATA[
+			import flash.media.*;
+			import flash.net.getClassByAlias;
+			
+			import mx.collections.ArrayCollection;
+			import mx.controls.Alert;
+			import mx.controls.Text;
+			import mx.core.Application;
+			import mx.core.FlexGlobals;
+			import mx.core.UIComponent;
+			import mx.events.FlexEvent;
+			import mx.formatters.DateFormatter;
+			import mx.rpc.events.ResultEvent;
+			import mx.utils.Base64Encoder;
+			
+			import spark.filters.DropShadowFilter;
+			
+			private const STRATUS_ADDR:String = "rtmfp://stratus.rtmfp.net/";
+			private const DEVELOPER_KEY:String = "336ba20e0382928c33d08b99-1297c857ea7b";
+			
+			public var netConnection:NetConnection = new NetConnection();
+			public var sendStream:NetStream;
+			public var recvStreamArr: Array = new Array();
+			
+			public var myCamera:Camera;
+			
+			public var streamDict:Dictionary = new Dictionary();
+			public var myListeners:Array = new Array();
+			
+			private var _chatMessages:Array;
+			private var _roomName:String;
+			private var _enabledDebug:Boolean = false;
+			
+			
+			[Embed(source="new_message.mp3")]
+			[Bindable]
+			public var sndCls:Class;
+			public var snd:Sound = new sndCls() as Sound;
+			public var sndChannel:SoundChannel;
+			
+			[Bindable]
+			public var topicsList:ArrayCollection;
+			
+			// mic object
+			public var mic:Microphone
+			
+			private static const zeroMicGain:int = 0;
+			private static const maxMicGain:int = 50;
+			
+			public function initAll():void{
+				_chatMessages=new Array;
+				
+				//attach to camera
+				myCamera = Camera.getCamera();
+				if (myCamera == null){
+					Alert.show('Подключите веб-камеру и микрофон.', 'Оборудование не найдено');
+				}
+				else{
+					myCamera.setMode(320,240,30);
+					mycam.attachCamera(myCamera);
+				};
+				
+				chat_input.addEventListener(KeyboardEvent.KEY_DOWN, chatEnterHandler);
+				
+				var debug:String = FlexGlobals.topLevelApplication.parameters.debug;
+				if(debug == '1') {
+					_enabledDebug = true;
+					currentState = 'debug';
+				}
+				
+				var roomId:int = FlexGlobals.topLevelApplication.parameters.roomId;
+				_roomName = "room" + (roomId > 0 ? roomId : 1);
+				
+				//connecting to stratus
+				netConnection.maxPeerConnections = 10;
+				netConnection.addEventListener(NetStatusEvent.NET_STATUS,netHandler);
+				netConnection.connect(STRATUS_ADDR+DEVELOPER_KEY);
+				
+				mic.gain = maxMicGain;
+				
+			}
+			
+			private function netHandler(event: NetStatusEvent):void{
+				trace(event.info.code);
+				for (var key:* in event.info)
+					trace(key, event.info[key]);
+				trace('-----');
+				
+				switch (event.info.code){
+					case "NetConnection.Connect.Success":
+						initSendStream();
+						break;
+					case "NetConnection.Connect.Failed":
+						Alert.show('Не получается подключиться в Adobe.Stratus.\n' +
+							'Скорее всего проблема связана с настройками файервола',
+							'Проблема с подключением');
+						break;
+					case "NetStream.Connect.Closed":
+						if (streamDict[event.info.stream] != undefined)
+							closeStreamWindow(event.info.stream);
+						break;
+					
+				}
+			}
+			
+			public function initSendStream():void{
+				sendStream = new NetStream(netConnection, NetStream.DIRECT_CONNECTIONS);
+				
+				var c:Camera = Camera.getCamera();
+				c.setMode(320,240,15);
+				c.setQuality(0,90);
+				
+				sendStream.attachCamera(c);
+				mic = Microphone.getMicrophone();
+				if (mic)
+				{
+					mic.codec = SoundCodec.SPEEX;
+					mic.setSilenceLevel(0);
+					if(!mic.useEchoSuppression) addToStatusBox("Шумоподавление выключено!");
+					else addToStatusBox("Шумоподавление включено.");
+				}
+				sendStream.attachAudio(mic);
+				sendStream.publish('media');
+				
+				var client: Object = new Object();
+				client.onPeerConnect = 
+					function(callerNS:NetStream):Boolean {
+						trace('sendStream: client connected',callerNS.farID);
+						callerNS.send('hello', netConnection.nearID, username.text);
+						
+						var cl2:Object = new Object();
+						cl2.imnew = 
+							function(senderID: String):void{
+								trace('I\'m new got');
+								connectTo(senderID);
+							};
+						callerNS.client = cl2;
+						
+						return true;
+					};
+				sendStream.client = client;
+				
+			}
+			
+			public function connectTo(peerID:String):Boolean{
+				//check if peer exist
+				for (var stream:* in streamDict){
+					if ((stream.farID) == peerID){
+						return false;
+					}
+				};
+				initRecieveStream(peerID);
+				return true;
+			}
+			
+			public function initRecieveStream(peerID:String):void{
+				trace('connecting');
+				var rec:NetStream = new NetStream(netConnection, peerID);
+				rec.addEventListener(NetStatusEvent.NET_STATUS,
+					function(event:NetStatusEvent):void{
+						switch (event.info.code){
+							case "NetStream.Play.Start":
+								addToStatusBox("Получение данных от peerId:" + peerID);
+								var uic:UIComponent = newCleintWindow(rec);
+								streamDict[rec] = uic;
+								rec.send('imnew',netConnection.nearID);
+								break;
+						}
+					});
+				
+				
+				var client: Object = new Object();
+				client.hello = function(senderID: String, username:String):void {
+					for (var stream:* in streamDict){
+						if ((stream.farID) == senderID){
+							streamDict[stream].getChildByName('nic').text = username;
+						}
+					}
+				};
+				client.exit = function (senderID: String):void{
+					for (var stream:* in streamDict){
+						if ((stream.farID) == senderID){
+							stream.close();
+							closeStreamWindow(stream);							
+						}
+					}					
+				};
+				/* работа с чатом */
+				client.resendChatMessage=function(message:Object):void{
+					resendChatMessage(message);
+				};		
+				client.updateChatMessages=function(messages:Array):void{	 	
+					updateChat(messages);	 	
+				};
+				
+				rec.client = client;
+				rec.play('media');
+			}
+			
+			public function newCleintWindow(stream:NetStream):UIComponent{
+				trace('open video for stream');
+				var uic:UIComponent= new UIComponent();
+				uic.width = 300;
+				uic.height = 220;
+				
+				var video: Video = new Video(300, 220);
+				
+				video.addEventListener(Event.RENDER, mycam_updateCompleteHandler);
+				video.name = "userVideo";
+				video.attachNetStream(stream);	
+				uic.addChild(video); 
+				var text:Label = new Label();
+				text.width = 160;
+				text.height = 20;
+		
+				text.text = 'Hello';
+				text.name = 'nic';
+				uic.addChild(text);
+				text.y = 10;
+				text.x = 10;
+				text.setStyle("color", 0xffffff);
+				text.setStyle("fontWeight", "bold");
+				
+				var f:spark.filters.DropShadowFilter = new spark.filters.DropShadowFilter(0,0, 0x000000,1, 2,2, 2);
+				text.filters = [f];
+				hgroup.addElement(uic);	
+				
+				return uic;
+			}
+			
+			public function closeStreamWindow(stream:NetStream):void{
+				var uic:UIComponent = streamDict[stream];
+				uic.removeChildAt(0);
+				hgroup.removeElement(uic);
+				delete streamDict[stream];
+			}
+						
+			public function sendLoadRoom():void{
+				addToStatusBox("Отправка запроса на сервер комнат ("+_roomName+")");
+				peerService.send( {peer: netConnection.nearID, 
+					username: username.text, room: _roomName});	
+			}
+			
+			protected function connectButton_clickHandler(event:MouseEvent):void
+			{
+				if (myCamera.muted){ 
+					Alert.show('Нужно включить камару. Иначе никак :)','Включите камеру');
+				} else if (!netConnection.connected){
+					Alert.show('Вы не подключены к Adobe.Stratus.\nПочему - непонятно, скорее всего файервол.\nПопробуйте обновить приложение','Проблемы с соединением');
+				} else if (username.text.length == 0){
+					Alert.show('Введите ваш псевдоним.','Проблемы с соединением');
+					
+				} else {
+					//disconnect 
+					sendStream.send('exit', netConnection.nearID);
+					//close my streams
+					for (var stream:* in streamDict){
+						stream.close();
+						closeStreamWindow(stream);
+					}
+					sendLoadRoom();
+				}
+				
+			}
+			
+			protected function peerService_resultHandler(event:ResultEvent):void
+			{
+				var k:String = event.statusCode.toString();
+				addToStatusBox("Код ответа сервера: " + k);
+				for each(var peer:XML in event.result.peer){
+					connectTo(peer.text());
+				}				
+				
+			}
+			
+			// p2p пересылка сообщений часа
+			private function resendChatMessage(message:Object):void{
+				_chatMessages.push(message);
+				updateChat(_chatMessages);
+				sendStream.send("updateChatMessages",_chatMessages);								
+			}
+			
+			//Отображение сообщений чата
+			private function updateChat(messages:Array):void{
+				_chatMessages=messages
+				chat_area.text="";	 	
+				if(_chatMessages.length>0){
+					_chatMessages.sortOn("date",Array.NUMERIC);
+					var chat_text:String=""
+					var formatter:DateFormatter=new DateFormatter;
+					formatter.formatString="DD.MM.YY JJ:NN:SS"
+					for each(var message:Object in _chatMessages){
+						var date:Date=new Date()
+						date.setTime(Number(message.date))
+						var d:String=formatter.format(date)
+						var st:String='<TEXTFORMAT LEADING="2"><P ALIGN="LEFT"><FONT FACE="Verdana" SIZE="10" COLOR="#FF0000" LETTERSPACING="0" KERNING="0">'+d+'<FONT COLOR="#0B333C"> <B>'+message.user+'</B>: '+message.body+'</FONT></FONT></P></TEXTFORMAT>'
+						chat_text+=st;
+					}
+					chat_area.htmlText=chat_text;
+					sndChannel = snd.play();
+				}
+				
+			}
+			
+			// Перехват нажатия Enter в чате
+			private function chatEnterHandler(event:KeyboardEvent):void
+			{
+				if(event.keyCode==Keyboard.ENTER) sendChatMessage();
+			}
+			
+			// Отправка нового сообщения чата
+			private function sendChatMessage():void{	
+				if(!peerService.lastResult) {
+					Alert.show('Прежде чем отправить сообщение, подключитесь к серверу.','Ошибка');
+				}
+				else if(chat_input.text.length == 0) {
+					Alert.show('Введите сообщение.','Ошибка');
+				} else {
+					var message:Object=new Object;
+					message.date=new Date().time;
+					message.user=username.text;
+					message.body=chat_input.text;
+					
+					_chatMessages.push(message);		
+					sendStream.send("updateChatMessages",_chatMessages);
+					updateChat(_chatMessages);		
+					chatService.send({text: message.body, username: username.text});
+				}
+				chat_input.text="";
+			}
+			
+			// Включить/выключить микрофон
+			protected function muteButton_clickHandler(event:MouseEvent):void
+			{
+				if(mic.gain > 0) {
+					mic.gain = zeroMicGain;
+					muteButton.label = "Микрофон выключен";
+					addToStatusBox("Микрофон выключен");
+					
+				}
+				else {
+					mic.gain = maxMicGain;
+					//Alert.show("Включили",'Ошибка');
+					muteButton.label = "Микрофон включен";
+					addToStatusBox("Микрофон включен");
+				}
+				//Alert.show(mic.gain.toString(),'Уровень звука');
+			}
+			
+			// Логирование в дебаг-панель
+			private function addToStatusBox(message:String):void {
+				// если делать запись в скрытый элемент, будет фейл!
+				if(_enabledDebug) status_text.text = message + "\n" + status_text.text;
+			}
+
+			protected function mycam_updateCompleteHandler(event:Event):void
+			{
+				var borderColor:int = 0;
+				
+				if ( event.target.name == "mycam" )
+				{
+					borderColor = 0x6eb535;
+					event.target.graphics.lineStyle(6, borderColor);
+					event.target.graphics.drawRect(-3,-3, event.target.width+6, event.target.height+6)
+				}
+				else
+				{
+					borderColor = 0x1e678a;
+					var sprite:Sprite = new Sprite();
+					event.target.parent.addChild(sprite);
+					sprite.graphics.lineStyle(6, borderColor);
+					sprite.graphics.drawRect(-3,-3, event.target.width+6, event.target.height+6)
+				}
+			}
+
+		]]>
+	</fx:Script>
+	
+
+	<fx:Style source="global.css" />
+	<s:states>
+		<s:State name="debug"/>
+		<s:State name="main"/>
+	</s:states>
+	<fx:Declarations>
+		<s:HTTPService id="peerService" url="http://navigator-edu.appspot.com/peers.xml" resultFormat="e4x" result="peerService_resultHandler(event)" showBusyCursor="true"/>	
+		<s:HTTPService id="chatService" url="http://navigator-edu.appspot.com/chat.xml" resultFormat="e4x"/>	
+	</fx:Declarations>
+	
+	<local:ApplicationHeader width="100%" height="82" id="appHeader"/>
+	
+	<s:Group height="565" y="83">
+		<mx:VideoDisplay id="mycam" name="mycam" x="11" y="0" width="320" height="240"
+						 updateComplete="mycam_updateCompleteHandler(event)"/>
+
+		<s:Label text="Ваше имя:" fontStyle="normal" x="26" y="258" width="89" height="19" fontSize="16"/>
+		<s:TextInput width="115" id="username" x="111" y="252" height="28"/>
+		
+		<mx:Button id="connectButton" label="Подключиться" click="connectButton_clickHandler(event)" x="233" y="251" width="101" height="30"/>
+		
+		<s:Label x="16" y="291" text="Чат" fontWeight="bold"/>
+		<mx:TextArea width="320" height.main="126" height.debug="96" id="chat_area" x="13" y="306" valueCommit="chat_area.verticalScrollPosition=chat_area.maxVerticalScrollPosition"/>
+		<mx:TextInput id="chat_input" width="232" x="14" y.debug="408" y.main="438"/>
+		<mx:Button id="chatButton" label="Отправить" click="sendChatMessage()" labelPlacement="top" x="252.7" y.debug="408" y.main="438" width="82"/>
+		
+		<mx:TextArea width="320" height="50" id="status_text" x="14" y="450" editable="false" dropShadowVisible="false" includeIn="debug"/> <!---->
+		<mx:Button id="muteButton" label="Микрофон включен" click="muteButton_clickHandler(event)" width="144" height="30" x="102" y="469" y.debug="509" x.main="96" y.main="467"/>
+	</s:Group>
+
+	<s:TileGroup id="hgroup" width="682" height="371" 
+				 y="83" x="356" 
+				 contentBackgroundColor="#FEFFCF" 
+				 horizontalGap="18" verticalGap="18"/>
+</s:Application>

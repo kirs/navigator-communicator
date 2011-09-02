@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Group xmlns:fx="http://ns.adobe.com/mxml/2009" 
+		 xmlns:s="library://ns.adobe.com/flex/spark" 
+		 xmlns:mx="library://ns.adobe.com/flex/mx"
+		 updateComplete="group1_updateCompleteHandler(event)">
+	<fx:Script>
+		<![CDATA[
+			import mx.events.FlexEvent;
+
+			protected function group1_updateCompleteHandler(event:FlexEvent):void
+			{
+				var fillType:String = GradientType.LINEAR;
+				var colors:Array = [0xd6f2fe, 0xFFFFFF];
+				var alphas:Array = [1, 1];
+				var ratios:Array = [0x00, 0xFF];
+				var matr:Matrix = new Matrix();
+				matr.createGradientBox(width, height, 90, 0, 0);
+				var spreadMethod:String = SpreadMethod.PAD;
+				this.graphics.beginGradientFill(fillType, colors, alphas, ratios, matr, spreadMethod);        
+				this.graphics.drawRect( 0, 0, width, height);
+			}
+
+		]]>
+	</fx:Script>
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+	</fx:Declarations>
+	<mx:Image source="@Embed(source='images/logo.png')" x="43" width="323" height="72"
+			  smoothBitmapContent="true"/>
+</s:Group>
