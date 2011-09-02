@@ -1,0 +1,2 @@
+#Communator app for [Navigator-edu](http://navigator-edu.ru) corp.
+Adds ability to serve up to 8-person videocalls in browser window. Based on Adobe Flex, uses App Engine API to keep peers connections in datastore. Was written in October 2010.
